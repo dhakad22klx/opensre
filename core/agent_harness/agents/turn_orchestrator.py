@@ -95,6 +95,8 @@ def _record_action_only_turn(session: SessionStore, message: str, assistant_text
 
 
 def answer_cli_agent(
+    # This function is very important because it is used as the entry point inside interactive shell!!!
+    # This function doesn't execute tools. Only answers text.
     message: str,
     session: SessionStore,
     output: OutputSink,

@@ -1,4 +1,9 @@
-"""Execute submitted interactive-shell turns through the shared agent harness."""
+"""
+Execute submitted interactive-shell turns through the shared agent harness.
+
+Comment Vincent: Again 5 functions that are largely overlapping in functionality.
+Comment Vincent: This file is trying to mimic the functions in the core agent_harness package. It shouldn't do that.
+"""
 
 from __future__ import annotations
 
@@ -190,6 +195,7 @@ def execute_shell_turn(
     """
     from core.agent_harness.session.compaction import auto_compact_if_needed
 
+    # This is problematic bwecause at a random place you have session compaction. This should happen in the agent layer in core, and not in the interactive shell in a random function!!!!
     auto_compact_if_needed(session)
     _execute = execute_actions or run_action_tool_turn
     _gather = gather_evidence or gather_integration_tool_evidence

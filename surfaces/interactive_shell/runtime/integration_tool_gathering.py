@@ -18,7 +18,7 @@ from rich.markup import escape
 
 from core.agent_harness.session import Session
 from core.agent_harness.turns import evidence_driver
-from core.agent_harness.turns.evidence_driver import EvidenceAgentFactory
+from core.agent_harness.turns.evidence_driver import GatherAgentFactory
 from surfaces.interactive_shell.ui import DIM
 from surfaces.interactive_shell.utils.error_handling.exception_reporting import report_exception
 from surfaces.shared.tool_labels import tool_short_label, tool_source_label
@@ -148,7 +148,7 @@ def gather_integration_tool_evidence(
     console: Console,
     *,
     is_tty: bool | None = None,
-    agent_factory: EvidenceAgentFactory | None = None,
+    agent_factory: GatherAgentFactory | None = None,
 ) -> str | None:
     """Run a bounded tool-calling loop and return collected evidence, or None.
 

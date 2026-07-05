@@ -51,7 +51,7 @@ _MAX_PER_TOOL_CHARS = 4_000
 PersistToolCalls = Callable[[list[tuple[Any, Any]]], None]
 
 
-class EvidenceAgentFactory(Protocol):
+class GatherAgentFactory(Protocol):
     """Build the runtime :class:`Agent` for one evidence-gather turn."""
 
     def __call__(
@@ -202,7 +202,7 @@ def gather_tool_evidence(
     persist: PersistToolCalls | None = None,
     error_reporter: ErrorReporter | None = None,
     is_tty: bool | None = None,  # noqa: ARG001 — reserved for parity with answer agents
-    agent_factory: EvidenceAgentFactory | None = None,
+    agent_factory: GatherAgentFactory | None = None,
 ) -> str | None:
     """Run a bounded tool-calling loop and return collected evidence, or None.
 
@@ -267,4 +267,4 @@ def gather_tool_evidence(
     return _format_observation(result.executed)
 
 
-__all__ = ["EvidenceAgentFactory", "PersistToolCalls", "gather_tool_evidence"]
+__all__ = ["GatherAgentFactory", "PersistToolCalls", "gather_tool_evidence"]

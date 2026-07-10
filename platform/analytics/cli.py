@@ -15,7 +15,6 @@ from config.constants.investigation import MAX_INVESTIGATION_LOOPS
 from platform.analytics.events import Event
 from platform.analytics.investigation_loop import (
     begin_investigation_loop_metrics_scope,
-    bind_investigation_loop_metrics_from_state,
     bound_loop_metrics,
     loop_metrics_from_state,
     merge_loop_properties,
@@ -158,7 +157,6 @@ class InvestigationTracker:
         loop_count, iteration_cap = loop_metrics_from_state(state)
         self.investigation_loop_count = loop_count
         self.investigation_iteration_cap = iteration_cap
-        bind_investigation_loop_metrics_from_state(state)
 
 
 def _string_value(value: object) -> str | None:
@@ -557,6 +555,7 @@ def capture_investigation_failed(
     integration_failure_message: str | None = None,
     investigation_target: str | None = None,
     shared_properties: Properties | None = None,
+    state: Mapping[str, object] | None = None,
 ) -> None:
     props = _investigation_failed_properties(
         shared_properties=shared_properties or (tracker.shared_properties if tracker else {}),
@@ -567,6 +566,7 @@ def capture_investigation_failed(
         integration_involved=integration_involved,
         integration_failure_message=integration_failure_message,
         investigation_target=investigation_target,
+        state=state,
         tracker=tracker,
     )
     if tracker is None:

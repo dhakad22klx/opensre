@@ -69,3 +69,17 @@ curl -s -X POST "$GRAFANA_URL/api/annotations" \
 
 Tagging deploy annotations consistently (e.g. `deployment`) lets the agent filter precisely
 during an investigation.
+
+### OpenSRE's own investigations
+
+Once Grafana is connected, OpenSRE also posts its own annotation automatically when an
+investigation completes — no extra setup required. Each annotation is tagged `opensre` and
+`investigation` (plus `severity:<level>` / `category:<root_cause_category>` when known), so
+you can tell "an investigation ran" apart from "a deploy happened" while still seeing both
+on the same timeline.
+
+This reuses the same token you configured for reads (`GRAFANA_READ_TOKEN` / the "Grafana
+service account token" wizard prompt). Grafana service-account tokens are role-scoped —
+writing annotations requires Editor (or higher) permission. If your token is Viewer-scoped,
+the write will fail and OpenSRE logs a warning; grant the token Editor access if you want
+investigation annotations to succeed.

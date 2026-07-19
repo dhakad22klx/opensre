@@ -375,6 +375,61 @@ def test_twilio_sms_skipped_when_channel_disabled(monkeypatch: pytest.MonkeyPatc
     mock_sms.assert_not_called()
 
 
+def test_grafana_annotation_created_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_generate_report_deps(monkeypatch)
+
+    mock_send_slack = MagicMock(return_value=(False, None))
+    mock_build_action_blocks = MagicMock(return_value=[])
+    mock_grafana_client = MagicMock(is_configured=True)
+    mock_grafana_client.create_annotation.return_value = {"success": True, "id": 1}
+
+    with (
+        patch("integrations.slack.delivery.send_slack_report", mock_send_slack),
+        patch("integrations.slack.delivery.build_action_blocks", mock_build_action_blocks),
+        patch(
+            "integrations.grafana.reporting_adapter.get_grafana_client_from_credentials",
+            return_value=mock_grafana_client,
+        ) as mock_factory,
+    ):
+        from tools.investigation.reporting.node import generate_report
+
+        generate_report(
+            _make_state(
+                resolved_integrations={
+                    "grafana": {
+                        "endpoint": "https://grafana.example.com",
+                        "api_key": "tok",
+                    }
+                }
+            )
+        )  # type: ignore[arg-type]
+
+    mock_factory.assert_called_once()
+    mock_grafana_client.create_annotation.assert_called_once()
+
+
+def test_grafana_annotation_skipped_without_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_generate_report_deps(monkeypatch)
+
+    mock_send_slack = MagicMock(return_value=(False, None))
+    mock_build_action_blocks = MagicMock(return_value=[])
+
+    with (
+        patch("integrations.slack.delivery.send_slack_report", mock_send_slack),
+        patch("integrations.slack.delivery.build_action_blocks", mock_build_action_blocks),
+        patch(
+            "integrations.grafana.reporting_adapter.get_grafana_client_from_credentials"
+        ) as mock_factory,
+    ):
+        from tools.investigation.reporting.node import generate_report
+
+        generate_report(_make_state())  # type: ignore[arg-type]
+
+    mock_factory.assert_not_called()
+
+
 def test_twilio_sms_skipped_without_recipient(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_generate_report_deps(monkeypatch)
 

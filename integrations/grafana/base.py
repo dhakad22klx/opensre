@@ -366,6 +366,40 @@ class GrafanaClientBase:
             return {}
         return {"Authorization": f"Bearer {self.read_token}"}
 
+    def create_annotation(
+        self,
+        text: str,
+        tags: list[str] | None = None,
+        time_ms: int | None = None,
+        time_end_ms: int | None = None,
+    ) -> dict[str, Any]:
+        """Create a Grafana annotation via ``POST /api/annotations``.
+
+        Uses the same credentials as every read (``read_token``/Basic auth).
+        Mirrors the GET methods' error handling: never raises, returns a
+        ``{"success": False, "error": ...}`` dict on any failure (including a
+        403 if the token lacks Editor/write permission) instead.
+        """
+        url = f"{self.instance_url}/api/annotations"
+        payload: dict[str, Any] = {"time": time_ms, "tags": tags or [], "text": text}
+        if time_end_ms is not None:
+            payload["timeEnd"] = time_end_ms
+        headers = {**self._get_auth_headers(), "Content-Type": "application/json"}
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=10,
+                verify=self._config.ssl_verify,
+            )
+            response.raise_for_status()
+            result: dict[str, Any] = response.json()
+            return {"success": True, **result}
+        except Exception as e:
+            logger.warning("[grafana] Failed to create annotation: %s", e)
+            return {"success": False, "error": str(e)}
+
     def _make_request(
         self,
         url: str,

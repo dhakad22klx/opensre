@@ -8,6 +8,7 @@ file are excluded by an allowlist of roots and again by name.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from http import HTTPStatus
 from pathlib import Path
 
 import pytest
@@ -361,13 +362,20 @@ def test_aws_failures_name_their_cause() -> None:
     from platform.filestorage.providers.aws import S3ObjectStore
 
     class _Failing:
-        def get_paginator(self, _name: str) -> object:
+        def list_objects_v2(self, **_kwargs: object) -> dict[str, object]:
             raise ClientError(
                 {
                     "Error": {
                         "Code": "NoSuchBucket",
                         "Message": "The specified bucket does not exist",
-                    }
+                    },
+                    "ResponseMetadata": {
+                        "HTTPStatusCode": HTTPStatus.NOT_FOUND,
+                        "RequestId": "test-request-id",
+                        "HostId": "test-host-id",
+                        "HTTPHeaders": {},
+                        "RetryAttempts": 0,
+                    },
                 },
                 "ListObjectsV2",
             )
@@ -918,14 +926,10 @@ def test_list_prefix_is_delimited_so_a_sibling_bucket_path_cannot_match() -> Non
 
     seen: dict[str, str] = {}
 
-    class _RecordingPaginator:
-        def paginate(self, **kwargs: str) -> list[dict[str, object]]:
-            seen["Prefix"] = kwargs["Prefix"]
-            return []
-
     class _Client:
-        def get_paginator(self, _name: str) -> _RecordingPaginator:
-            return _RecordingPaginator()
+        def list_objects_v2(self, **kwargs: object) -> dict[str, object]:
+            seen["Prefix"] = str(kwargs["Prefix"])
+            return {"Contents": [], "IsTruncated": False}
 
     store = S3ObjectStore(RemoteSyncConfig(bucket="b", prefix="opensre"), client=_Client())
 

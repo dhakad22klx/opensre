@@ -10,7 +10,7 @@ from core.agent_harness.turns.headless_dispatch import (
     NullToolProvider,
     StaticReasoningClientProvider,
 )
-from core.agent_harness.turns.turn_results import ShellTurnResult, ToolCallingTurnResult
+from core.agent_harness.turns.turn_results import ToolCallingTurnResult, TurnResult
 
 
 class _Echo:
@@ -42,9 +42,9 @@ def test_dispatch_message_reuses_attached_agent(monkeypatch: Any) -> None:
     calls: list[str] = []
 
     class _Agent:
-        def dispatch(self, message: str) -> ShellTurnResult:
+        def dispatch(self, message: str) -> TurnResult:
             calls.append(message)
-            return ShellTurnResult(
+            return TurnResult(
                 final_intent="cli_agent_handled",
                 action_result=_empty_action(),
                 assistant_response_text=f"ok:{message}",
@@ -71,5 +71,8 @@ def test_headless_bind_turn_swaps_output() -> None:
         output=first,
         reasoning=StaticReasoningClientProvider(client=_Echo()),
     )
+    before_runner = agent._action_runner  # noqa: SLF001
     agent.bind_turn(output=second)
     assert agent._output is second  # noqa: SLF001
+    assert agent._action_runner is not before_runner  # noqa: SLF001
+    assert agent._action_runner.output is second  # noqa: SLF001

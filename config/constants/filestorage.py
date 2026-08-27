@@ -39,6 +39,16 @@ BLOB_READ_WRITE_TOKEN_ENV = "BLOB_READ_WRITE_TOKEN"
 # Endpoint URL override for S3-compatible stores (MinIO, R2, Spaces, …).
 REMOTE_SYNC_ENDPOINT_URL_ENV = "OPENSRE_REMOTE_SYNC_ENDPOINT_URL"
 
+# Passphrase the store's key is derived from. Resolved through the usual secret
+# tiers (this variable, then the owner-only local file), so it need not stay
+# exported once setup has stored it.
+REMOTE_SYNC_PASSPHRASE_ENV = "OPENSRE_REMOTE_SYNC_PASSPHRASE"
+# Cached key-derivation result — written and read by opensre, not set by a user.
+# Scrypt costs ~0.4s and every CLI command is a fresh process, so without this
+# each status and sync would pay it again. Bound to the passphrase, the store's
+# salt, and the KDF parameters, and ignored when any of them changes.
+REMOTE_SYNC_KEY_CACHE_ENV = "OPENSRE_REMOTE_SYNC_KEY_CACHE"
+
 DEFAULT_REMOTE_SYNC_PREFIX = "opensre"
 DEFAULT_REMOTE_SYNC_PROVIDER = "aws"
 # Uploads run in parallel, capped per provider. This is the cap for a provider
@@ -57,6 +67,8 @@ __all__ = [
     "REMOTE_SYNC_ENV",
     "REMOTE_SYNC_EXCLUDE_ENV",
     "REMOTE_SYNC_EXCLUDE_OFF_ENV",
+    "REMOTE_SYNC_KEY_CACHE_ENV",
+    "REMOTE_SYNC_PASSPHRASE_ENV",
     "REMOTE_SYNC_PREFIX_ENV",
     "REMOTE_SYNC_PROFILE_ENV",
     "REMOTE_SYNC_PROVIDER_ENV",

@@ -33,10 +33,42 @@ class UnsyncablePathError(RemoteSyncError):
     """
 
 
+class RemoteSyncEncryptionError(RemoteSyncError):
+    """Base for every client-side encryption failure.
+
+    Every subclass fails the run closed: a degraded mode that uploaded plaintext
+    when the key was unavailable would silently defeat the feature.
+    """
+
+
+class MissingPassphraseError(RemoteSyncEncryptionError):
+    """Encryption is on but no passphrase could be resolved on this machine."""
+
+
+class WrongPassphraseError(RemoteSyncEncryptionError):
+    """The passphrase did not unwrap the store's key.
+
+    Indistinguishable from a tampered manifest by design — both mean this
+    machine cannot speak for this store.
+    """
+
+
+class UndecryptableObjectError(RemoteSyncEncryptionError):
+    """A stored object could not be opened.
+
+    Raised before the local file is touched: conflicts resolve by recency, so an
+    unreadable newer object would otherwise overwrite good local history.
+    """
+
+
 __all__ = [
+    "MissingPassphraseError",
     "OrgScopeNotSupportedError",
     "RemoteSyncConfigError",
+    "RemoteSyncEncryptionError",
     "RemoteSyncError",
     "RemoteSyncUnavailableError",
+    "UndecryptableObjectError",
     "UnsyncablePathError",
+    "WrongPassphraseError",
 ]

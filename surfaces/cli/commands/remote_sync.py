@@ -5,12 +5,20 @@ from __future__ import annotations
 from contextlib import suppress
 
 import click
+from prompt_toolkit import prompt as pt_prompt
 
 from config.constants.filestorage import (
     DEFAULT_REMOTE_SYNC_PREFIX,
     DEFAULT_REMOTE_SYNC_PROVIDER,
+    REMOTE_SYNC_PASSPHRASE_ENV,
 )
-from infrastructure.filestorage import RemoteSyncConfigError, RemoteSyncError
+from config.secrets.store import normalize_secret
+from infrastructure.filestorage import (
+    MissingPassphraseError,
+    RemoteSyncConfigError,
+    RemoteSyncError,
+)
+from infrastructure.filestorage.encryption.keys import resolve_passphrase, save_passphrase
 from infrastructure.filestorage.enums import RemoteSyncField, RemoteSyncSubcommand
 from infrastructure.filestorage.messages import (
     DISABLED_HELP,
@@ -127,6 +135,14 @@ def run_remote_sync_on_exit() -> None:
     show_default=True,
     help="Whether remote sync is switched on in stored settings. --disabled alone only turns it off.",
 )
+@click.option(
+    "--encrypt/--no-encrypt",
+    default=None,
+    help=(
+        "Encrypt contents under a passphrase before upload. Prompts for the "
+        "passphrase. Asked interactively when neither form is given."
+    ),
+)
 def setup_command(
     provider: str | None,
     bucket: str | None,
@@ -134,13 +150,18 @@ def setup_command(
     region: str | None,
     profile: str | None,
     enabled: bool,
+    encrypt: bool | None,
 ) -> None:
     """Write remote_sync settings to ~/.opensre/config.yml (interactive if flags omitted)."""
     if not enabled and (bucket is None or not bucket.strip()):
         # --disabled with no new settings just switches the stored section off.
         try:
             _reject_disabled_with_setup_flags(
-                provider=provider, prefix=prefix, region=region, profile=profile
+                provider=provider,
+                prefix=prefix,
+                region=region,
+                profile=profile,
+                encrypt=encrypt,
             )
             disable_remote_sync()
         except RemoteSyncError as exc:
@@ -156,7 +177,13 @@ def setup_command(
             region=region,
             profile=profile,
             enabled=enabled,
+            encrypted=encrypt,
         )
+        if request.encrypted:
+            # Read off the request, not the flag: the interactive path may have
+            # asked. Before the settings are written, because a machine left
+            # claiming to encrypt with no passphrase would refuse every sync.
+            _ensure_passphrase()
         config = save_remote_sync_settings(request)
     except (RemoteSyncError, click.Abort) as exc:
         if isinstance(exc, click.Abort):
@@ -174,6 +201,7 @@ def _reject_disabled_with_setup_flags(
     prefix: str | None,
     region: str | None,
     profile: str | None,
+    encrypt: bool | None,
 ) -> None:
     """``--disabled`` only flips the switch; explicit setup values need a bucket."""
     given = [
@@ -186,6 +214,9 @@ def _reject_disabled_with_setup_flags(
         )
         if value is not None and value.strip() != ""
     ]
+    if encrypt is not None:
+        # One option, two spellings: name back the one that was actually typed.
+        given.append("encrypt" if encrypt else "no-encrypt")
     if given:
         flags = ", ".join(f"--{name}" for name in given)
         raise RemoteSyncConfigError(
@@ -202,8 +233,16 @@ def _collect_setup_request(
     region: str | None,
     profile: str | None,
     enabled: bool,
+    encrypted: bool | None = None,
 ) -> RemoteSyncSetupRequest:
-    """Use flags when complete; otherwise prompt on a TTY."""
+    """Use flags when complete; otherwise prompt on a TTY.
+
+    Supplying ``--provider`` and ``--bucket`` skips the questions about *those*
+    values; it does not make the run unattended. The encryption question is
+    therefore asked on both paths — see :func:`_resolve_encrypt` — because
+    otherwise the shortest documented way to set sync up is also the one that
+    never mentions the store will hold readable incident history.
+    """
     flags_complete = provider is not None and bucket is not None and str(bucket).strip() != ""
     if flags_complete:
         return RemoteSyncSetupRequest(
@@ -213,6 +252,7 @@ def _collect_setup_request(
             region=region or "",
             profile=profile or "",
             enabled=enabled,
+            encrypted=_resolve_encrypt(encrypted),
         )
 
     if not click.get_text_stream("stdin").isatty():
@@ -231,14 +271,51 @@ def _collect_setup_request(
     prefix_value = click.prompt(
         "Prefix", default=prefix or DEFAULT_REMOTE_SYNC_PREFIX, show_default=True
     )
+    # Bound before the request is built so the questions come in the order they
+    # are read: the provider's own fields, then the one security choice.
+    region_value = _prompt_extra_field(RemoteSyncField.REGION, provider_value, region)
+    profile_value = _prompt_extra_field(RemoteSyncField.PROFILE, provider_value, profile)
+    encrypted_value = _resolve_encrypt(encrypted)
     return RemoteSyncSetupRequest(
         bucket=bucket_value,
         provider=provider_value,
         prefix=prefix_value,
-        region=_prompt_extra_field(RemoteSyncField.REGION, provider_value, region),
-        profile=_prompt_extra_field(RemoteSyncField.PROFILE, provider_value, profile),
+        region=region_value,
+        profile=profile_value,
         enabled=enabled,
+        encrypted=encrypted_value,
     )
+
+
+def _resolve_encrypt(encrypted: bool | None) -> bool:
+    """Settle the encryption choice: the flag, else ask, else off.
+
+    ``None`` means neither ``--encrypt`` nor ``--no-encrypt`` was given. A
+    terminal gets asked; a pipe or a CI job does not, because a question nobody
+    can answer would hang the run — those keep the old default and can state
+    the choice with the flag.
+    """
+    if encrypted is not None:
+        return encrypted
+    if not click.get_text_stream("stdin").isatty():
+        return False
+    return _prompt_encrypt()
+
+
+def _prompt_encrypt() -> bool:
+    """Offer encryption, stating what declining costs and what accepting risks.
+
+    Defaults to no: turning it on means a passphrase whose loss destroys the
+    store's contents, and that is not a thing to opt someone into by default.
+    Both halves are said out loud so the default is a decision rather than the
+    path of least resistance.
+    """
+    click.echo(
+        "\nEncrypt contents before upload? Without it, whoever operates the store "
+        "can read your sessions and memory.\nWith it, you choose a passphrase — "
+        "lose that passphrase and the store's contents are unrecoverable."
+    )
+    return bool(click.confirm("Encrypt contents", default=False))
 
 
 def _prompt_extra_field(field: RemoteSyncField, provider: str, current: str | None) -> str:
@@ -254,6 +331,67 @@ def _prompt_extra_field(field: RemoteSyncField, provider: str, current: str | No
     if extra is None:
         return current or ""
     return str(click.prompt(extra.prompt, default=current or "", show_default=False))
+
+
+def _ensure_passphrase() -> None:
+    """Guarantee a passphrase exists, asking for one only if none does.
+
+    A machine joining an existing store already has it — exported, in the
+    keychain, or in the fallback file — and asking again would invite a typo
+    that silently points this machine at a different key.
+    """
+    try:
+        resolve_passphrase()
+    except MissingPassphraseError:
+        save_passphrase(_prompt_new_passphrase("Encryption passphrase"))
+
+
+def _ask_masked(label: str) -> str:
+    """Read one line, echoing ``*`` per character.
+
+    ``prompt_toolkit`` rather than ``click.prompt(hide_input=True)``, which
+    echoes nothing at all: on a prompt typed twice and never displayed, no
+    feedback leaves the user unable to tell a swallowed keystroke from a
+    working one. Raw ``prompt_toolkit`` rather than ``questionary`` because
+    this sits among plain click prompts and questionary would bring its own
+    ``?`` styling to one question in the middle of the flow.
+    """
+    try:
+        return str(pt_prompt(f"{label}: ", is_password=True))
+    except (KeyboardInterrupt, EOFError) as exc:
+        # Same outcome as aborting any other prompt in this command.
+        raise click.Abort from exc
+
+
+def _prompt_new_passphrase(label: str) -> str:
+    """Ask for a passphrase twice, refusing to invent one off a TTY.
+
+    Losing this passphrase means losing the store's contents, so it is never
+    defaulted, generated, or read from a flag — a flag would put it in shell
+    history for every machine that ever set the store up. Mismatches re-ask
+    rather than abort: the typo is the likely cause, and making the user re-run
+    setup for it teaches nothing.
+
+    Returns the normalized form, which is what the secret tiers will hand back
+    later. Callers wrap the remote store under this value, so returning the
+    keystrokes verbatim would seal it under a passphrase this machine could
+    never resolve again. Normalizing before the comparison too: two entries
+    differing only in invisible padding are the same passphrase once stored, so
+    re-asking would be asking the user to reproduce a difference that cannot
+    survive.
+    """
+    if not click.get_text_stream("stdin").isatty():
+        raise RemoteSyncError(
+            f"a passphrase is needed and there is no terminal to ask on. "
+            f"Export {REMOTE_SYNC_PASSPHRASE_ENV} for this command instead."
+        )
+    while True:
+        passphrase = normalize_secret(_ask_masked(label))
+        if not passphrase:
+            raise RemoteSyncError("passphrase cannot be empty")
+        if passphrase == normalize_secret(_ask_masked(f"{label} (again)")):
+            return passphrase
+        click.echo("The two entries did not match — try again.", err=True)
 
 
 __all__ = ["remote_sync_command", "run_remote_sync_on_exit"]

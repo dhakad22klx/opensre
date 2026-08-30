@@ -12,7 +12,7 @@ from rich.console import Console
 from infrastructure.filestorage.config import RemoteSyncConfig
 from infrastructure.filestorage.engine import SyncProgress, SyncReport
 from infrastructure.filestorage.enums import SyncDirection, SyncRootName
-from infrastructure.filestorage.errors import RemoteSyncConfigError
+from infrastructure.filestorage.errors import MissingPassphraseError, RemoteSyncConfigError
 from infrastructure.filestorage.operations import SyncRootStatus, SyncStatus
 from surfaces.interactive_shell.command_registry import SLASH_COMMANDS, dispatch_slash
 from surfaces.interactive_shell.runtime import Session
@@ -203,6 +203,28 @@ def test_setup_disabled_says_off_without_a_sync_suggestion(
     out = buf.getvalue()
     assert "Remote sync is off" in out
     assert "remote-sync sync" not in out
+
+
+def test_an_encryption_failure_reaches_the_user_with_actionable_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unlike provider failures, these must still say what to do about it.
+
+    The generic "check the log" handler is right for anything carrying vendor
+    detail; it is wrong here, because a chat user has no log to go read and
+    "no passphrase on this machine" is the whole of the fix.
+    """
+
+    def _boom(**_kwargs: object) -> SyncReport:
+        raise MissingPassphraseError("no passphrase is available on this machine")
+
+    monkeypatch.setattr(
+        "surfaces.interactive_shell.command_registry.remote_sync_cmds.run_remote_sync",
+        _boom,
+    )
+    console, buf = _capture()
+    assert dispatch_slash("/remote-sync sync", Session(), console) is True
+    assert "no passphrase is available" in buf.getvalue()
 
 
 def test_sync_error_is_caught(monkeypatch: pytest.MonkeyPatch) -> None:

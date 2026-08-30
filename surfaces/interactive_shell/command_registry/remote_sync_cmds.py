@@ -11,13 +11,21 @@ from rich.progress import BarColumn, MofNCompleteColumn, Progress, TaskID, TextC
 from config.constants.filestorage import (
     DEFAULT_REMOTE_SYNC_PREFIX,
     DEFAULT_REMOTE_SYNC_PROVIDER,
+    REMOTE_SYNC_PASSPHRASE_ENV,
 )
-from infrastructure.filestorage import OrgScopeNotSupportedError, RemoteSyncError
+from infrastructure.filestorage import (
+    OrgScopeNotSupportedError,
+    RemoteSyncEncryptionError,
+    RemoteSyncError,
+    external_encryption_message,
+)
+from infrastructure.filestorage.encryption.keys import resolve_passphrase
 from infrastructure.filestorage.engine import SyncProgress
 from infrastructure.filestorage.enums import BucketExposure, RemoteSyncSubcommand, SyncDirection
 from infrastructure.filestorage.messages import (
     DISABLED_HELP,
     direction_label,
+    format_encryption_line,
     format_exclusion_lines,
     format_exposure_line,
     format_report_lines,
@@ -36,8 +44,8 @@ logger = logging.getLogger(__name__)
 
 _USAGE = (
     f"/remote-sync [{RemoteSyncSubcommand.STATUS}|{RemoteSyncSubcommand.SYNC}|"
-    f"{RemoteSyncSubcommand.SETUP}] [--pull-only|--push-only|--dry-run] "
-    f"[--provider … --bucket …]"
+    f"{RemoteSyncSubcommand.SETUP}] "
+    f"[--pull-only|--push-only|--dry-run] [--provider … --bucket … --encrypt]"
 )
 
 
@@ -61,6 +69,10 @@ def _print_status(console: Console) -> bool:
     if status.exposure is not None:
         style = ERROR if status.exposure.exposure is BucketExposure.PUBLIC else DIM
         console.print(f"[{style}]{escape(format_exposure_line(status.exposure))}[/]")
+    if status.encryption is not None:
+        encryption = status.encryption
+        style = DIM if encryption.healthy and encryption.configured else ERROR
+        console.print(f"[{style}]{escape(format_encryption_line(encryption))}[/]")
     for root in status.roots:
         console.print(f"  {root.name:<10} {root.path} [{DIM}]({root_state(root)})[/]")
     for line in format_exclusion_lines(status.exclusions):
@@ -145,7 +157,19 @@ def _run_setup(console: Console, args: list[str]) -> bool:
     prefix = _flag_value(args, "prefix") or DEFAULT_REMOTE_SYNC_PREFIX
     region = _flag_value(args, "region") or ""
     profile = _flag_value(args, "profile") or ""
-    enabled = "--disabled" not in {a.lower() for a in args}
+    flags = {a.lower() for a in args}
+    enabled = "--disabled" not in flags
+    encrypted = "--encrypt" in flags
+    if encrypted and not _passphrase_available():
+        # This surface also serves chat, where there is no way to ask for a
+        # passphrase — and saving "encrypted" with none to hand would leave the
+        # machine refusing every later sync.
+        console.print(
+            f"[{ERROR}]setup --encrypt needs a passphrase[/], and this surface cannot "
+            f"prompt for one. Export [bold]{REMOTE_SYNC_PASSPHRASE_ENV}[/bold] first, or "
+            "run [bold]opensre remote-sync setup[/bold] in a terminal, which asks."
+        )
+        return True
     config = save_remote_sync_settings(
         RemoteSyncSetupRequest(
             bucket=bucket,
@@ -154,9 +178,19 @@ def _run_setup(console: Console, args: list[str]) -> bool:
             region=region,
             profile=profile,
             enabled=enabled,
+            encrypted=encrypted,
         )
     )
     _print_lines(console, format_setup_lines(config, enabled=enabled))
+    return True
+
+
+def _passphrase_available() -> bool:
+    """Whether a passphrase already resolves, without asking for one."""
+    try:
+        resolve_passphrase()
+    except RemoteSyncError:
+        return False
     return True
 
 
@@ -180,6 +214,14 @@ def _cmd_remote_sync(_session: Session, console: Console, args: list[str]) -> bo
     except OrgScopeNotSupportedError as exc:
         # Safe to show: our own wording, no vendor or credential detail.
         console.print(f"[{DIM}]{exc}[/]")
+        return True
+    except RemoteSyncEncryptionError as exc:
+        # Ours, but not printable: these interpolate the failing object key,
+        # the store's key settings, or a wrapped keyring error, and this
+        # handler also answers gateway chat (CWE-209). ``escape`` guards
+        # markup, not information; the static copy still names the fix.
+        logger.warning("[remote-sync] encryption refused the command", exc_info=True)
+        console.print(f"[{ERROR}]{escape(external_encryption_message(exc))}[/]")
         return True
     except RemoteSyncError:
         # This handler also serves gateway chat, an external surface, so the
@@ -208,6 +250,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
             f"Subcommands: status, sync, setup. Default provider is "
             f"{DEFAULT_REMOTE_SYNC_PROVIDER} (built-in: {', '.join(builtin_providers())}). "
             "Credentials stay ambient; integration keys are never uploaded. "
+            "With --encrypt, contents are sealed under your passphrase before upload. "
             "Same service as `opensre remote-sync`.",
         ),
         first_arg_completions=(
@@ -226,6 +269,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
             "sync my conversations to S3",
             "back up my opensre memory",
             "set up opensre on my second laptop",
+            "encrypt my synced history so the cloud provider cannot read it",
         ),
     ),
 )

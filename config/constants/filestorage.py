@@ -39,6 +39,10 @@ BLOB_READ_WRITE_TOKEN_ENV = "BLOB_READ_WRITE_TOKEN"
 # Endpoint URL override for S3-compatible stores (MinIO, R2, Spaces, …).
 REMOTE_SYNC_ENDPOINT_URL_ENV = "OPENSRE_REMOTE_SYNC_ENDPOINT_URL"
 
+# Encrypt object contents before upload. Deliberately separate from the master
+# switch: turning sync on never turns encryption on, and the two settings must
+# agree with what the store already holds or the run fails closed.
+REMOTE_SYNC_ENCRYPT_ENV = "OPENSRE_REMOTE_SYNC_ENCRYPT"
 # Passphrase the store's key is derived from. Resolved through the usual secret
 # tiers (this variable, then the owner-only local file), so it need not stay
 # exported once setup has stored it.
@@ -63,6 +67,7 @@ __all__ = [
     "DEFAULT_REMOTE_SYNC_PREFIX",
     "DEFAULT_REMOTE_SYNC_PROVIDER",
     "REMOTE_SYNC_BUCKET_ENV",
+    "REMOTE_SYNC_ENCRYPT_ENV",
     "REMOTE_SYNC_ENDPOINT_URL_ENV",
     "REMOTE_SYNC_ENV",
     "REMOTE_SYNC_EXCLUDE_ENV",

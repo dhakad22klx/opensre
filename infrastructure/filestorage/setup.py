@@ -4,8 +4,10 @@ Writes the ``remote_sync`` section of ``~/.opensre/config.yml``. Ambient cloud
 credentials (AWS profile session, GCP Application Default Credentials,
 ``BLOB_READ_WRITE_TOKEN``, …) stay outside this file — opensre never stores
 them. ``update_section`` merges, so keys written by older versions survive;
-setup itself supplies exactly the six values below and never anything
-credential-shaped.
+setup itself supplies exactly the seven values below and never anything
+credential-shaped. The encryption passphrase is no exception: only the
+``encrypted`` switch lands here, while the passphrase goes to
+:mod:`config.secrets.store`.
 """
 
 from __future__ import annotations
@@ -36,6 +38,10 @@ class RemoteSyncSetupRequest:
     region: str = ""
     profile: str = ""
     enabled: bool = True
+    #: Seal contents before upload. Only the switch is stored here — the
+    #: passphrase goes through :mod:`config.secrets.store`, never into
+    #: ``config.yml``, which is itself on the never-uploaded deny-list.
+    encrypted: bool = False
 
 
 def save_remote_sync_settings(request: RemoteSyncSetupRequest) -> RemoteSyncConfig:
@@ -72,6 +78,7 @@ def save_remote_sync_settings(request: RemoteSyncSetupRequest) -> RemoteSyncConf
                 "prefix": prefix,
                 "region": region,
                 "profile": profile,
+                "encrypted": bool(request.encrypted),
             },
         )
     except LocalSettingsError as exc:
@@ -82,6 +89,7 @@ def save_remote_sync_settings(request: RemoteSyncSetupRequest) -> RemoteSyncConf
         prefix=prefix,
         region=region,
         profile=profile,
+        encrypted=request.encrypted,
     )
 
 

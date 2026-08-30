@@ -53,6 +53,17 @@ class WrongPassphraseError(RemoteSyncEncryptionError):
     """
 
 
+class PassphraseNotResolvableError(RemoteSyncEncryptionError):
+    """A passphrase was accepted somewhere it matters, but will not resolve here.
+
+    Raised by the persist step rather than the next command that fails, because
+    the two are far apart: the store is already wrapped under the passphrase by
+    the time it is stored, so a machine that cannot read it back is stranded,
+    and the only useful moment to say so is while the operator still has it to
+    hand.
+    """
+
+
 class UndecryptableObjectError(RemoteSyncEncryptionError):
     """A stored object could not be opened.
 
@@ -61,9 +72,40 @@ class UndecryptableObjectError(RemoteSyncEncryptionError):
     """
 
 
+class PlaintextStoreError(RemoteSyncEncryptionError):
+    """Encryption is on, but the store already holds unencrypted objects.
+
+    Refused rather than migrated silently, which would report success while the
+    existing readable copies stayed exposed.
+    """
+
+
+class ManifestMissingError(RemoteSyncEncryptionError):
+    """The store holds sealed objects but no manifest to open them.
+
+    Almost always a deleted manifest, and the keys it carried are gone with it.
+    Refused rather than guessed at from either side: with encryption off the
+    engine would write sealed bytes over local sessions, and with it on the
+    store looks like plaintext and invites adopting it under a key that cannot
+    decrypt anything.
+    """
+
+
+class EncryptedStoreError(RemoteSyncEncryptionError):
+    """The store is encrypted but this machine has encryption switched off.
+
+    The mirror image of :class:`PlaintextStoreError`, and the direction that
+    would push readable history into a store meant to hold none.
+    """
+
+
 __all__ = [
+    "EncryptedStoreError",
+    "ManifestMissingError",
     "MissingPassphraseError",
     "OrgScopeNotSupportedError",
+    "PassphraseNotResolvableError",
+    "PlaintextStoreError",
     "RemoteSyncConfigError",
     "RemoteSyncEncryptionError",
     "RemoteSyncError",

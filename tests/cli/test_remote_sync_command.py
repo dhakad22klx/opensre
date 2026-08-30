@@ -23,6 +23,7 @@ from infrastructure.filestorage.enums import (
 from infrastructure.filestorage.errors import RemoteSyncConfigError
 from infrastructure.filestorage.operations import SyncRootStatus, SyncStatus
 from infrastructure.filestorage.setup import RemoteSyncSetupRequest
+from infrastructure.process.exit_codes import ERROR
 from surfaces.cli.commands.remote_sync import remote_sync_command
 
 
@@ -342,8 +343,8 @@ def test_setup_interactive_skips_prompts_for_provider_without_extra_fields(
     monkeypatch.setattr(paths_mod, "OPENSRE_HOME_DIR", tmp_path)
     _set_interactive(monkeypatch)
 
-    # bucket, provider, prefix — no region/profile prompts for vercel.
-    result = runner.invoke(remote_sync_command, ["setup"], input="my-bucket\nvercel\nopensre\n")
+    # bucket, provider, prefix, encrypt — no region/profile prompts for vercel.
+    result = runner.invoke(remote_sync_command, ["setup"], input="my-bucket\nvercel\nopensre\nn\n")
     assert result.exit_code == 0, result.output
 
     on_disk = yaml.safe_load((tmp_path / "config.yml").read_text(encoding="utf-8"))
@@ -360,13 +361,12 @@ def test_setup_interactive_prompts_for_provider_extra_fields(
     monkeypatch.setattr(paths_mod, "OPENSRE_HOME_DIR", tmp_path)
     _set_interactive(monkeypatch)
 
-    # bucket, provider, prefix, region, profile — RemoteSyncSetupRequest's
-    # keyword order, which Python evaluates left to right regardless of the
-    # order EXTRA_FIELDS declares them in.
+    # bucket, provider, prefix, region, profile, encrypt — the order the
+    # prompts are bound in, which is the order they are read on screen.
     result = runner.invoke(
         remote_sync_command,
         ["setup"],
-        input="my-bucket\naws\nopensre\nus-east-1\nmy-profile\n",
+        input="my-bucket\naws\nopensre\nus-east-1\nmy-profile\nn\n",
     )
     assert result.exit_code == 0, result.output
 
@@ -430,13 +430,98 @@ def test_setup_prompts_for_missing_flags_on_a_tty(
         "surfaces.cli.commands.remote_sync.save_remote_sync_settings", _save_config(saved)
     )
     _set_interactive(monkeypatch)
-    # gcs declares no extra fields, so the wizard stops after bucket/provider/prefix.
-    result = runner.invoke(remote_sync_command, ["setup"], input="my-bucket\ngcs\nopensre\n")
+    # gcs declares no extra fields, so the wizard goes bucket/provider/prefix
+    # and then the one question every provider gets asked.
+    result = runner.invoke(remote_sync_command, ["setup"], input="my-bucket\ngcs\nopensre\nn\n")
     assert result.exit_code == 0
     request = saved["request"]
     assert request.provider == "gcs"
     assert request.bucket == "my-bucket"
     assert request.prefix == "opensre"
+    assert request.encrypted is False
+
+
+def test_setup_interactive_offers_encryption(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The flag is not the only way to find the option.
+
+    Someone who never reads ``--help`` would otherwise sync readable incident
+    history to a bucket without ever being told that was the choice they made.
+    """
+    saved: dict[str, RemoteSyncSetupRequest] = {}
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.save_remote_sync_settings", _save_config(saved)
+    )
+    monkeypatch.setattr("surfaces.cli.commands.remote_sync._ensure_passphrase", lambda: None)
+    _set_interactive(monkeypatch)
+
+    result = runner.invoke(remote_sync_command, ["setup"], input="my-bucket\ngcs\nopensre\ny\n")
+
+    assert result.exit_code == 0, result.output
+    assert "Encrypt contents" in result.output
+    assert saved["request"].encrypted is True
+
+
+def test_setup_asks_about_encryption_even_when_bucket_flags_are_given(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Passing --provider/--bucket skips those questions, not this one.
+
+    It is the shortest path in the docs, so if it stayed silent the quickest
+    documented way to set sync up would also be the one that never mentions
+    the store will hold readable history.
+    """
+    saved: dict[str, RemoteSyncSetupRequest] = {}
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.save_remote_sync_settings", _save_config(saved)
+    )
+    monkeypatch.setattr("surfaces.cli.commands.remote_sync._ensure_passphrase", lambda: None)
+    _set_interactive(monkeypatch)
+
+    result = runner.invoke(
+        remote_sync_command, ["setup", "--provider", "aws", "--bucket", "b"], input="y\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Encrypt contents" in result.output
+    assert saved["request"].encrypted is True
+
+
+def test_setup_does_not_ask_about_encryption_without_a_terminal(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A CI job must not block on a question nobody is there to answer."""
+    saved: dict[str, RemoteSyncSetupRequest] = {}
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.save_remote_sync_settings", _save_config(saved)
+    )
+    # No _set_interactive: stdin is not a TTY under CliRunner by default.
+
+    result = runner.invoke(remote_sync_command, ["setup", "--provider", "aws", "--bucket", "b"])
+
+    assert result.exit_code == 0, result.output
+    assert "Encrypt contents" not in result.output
+    assert saved["request"].encrypted is False
+
+
+def test_setup_explicit_no_encrypt_is_not_asked_again(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stated preference is not re-litigated by a prompt."""
+    saved: dict[str, RemoteSyncSetupRequest] = {}
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.save_remote_sync_settings", _save_config(saved)
+    )
+    _set_interactive(monkeypatch)
+
+    result = runner.invoke(
+        remote_sync_command, ["setup", "--no-encrypt"], input="my-bucket\ngcs\nopensre\n"
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Encrypt contents" not in result.output
+    assert saved["request"].encrypted is False
 
 
 def test_setup_disabled_without_bucket_switches_off_without_setup_values(
@@ -473,6 +558,34 @@ def test_setup_disabled_with_explicit_flags_is_rejected_not_dropped(
     assert result.exit_code != 0
     assert calls == {}
     assert "cannot also set --provider" in result.output
+    assert "Pass --bucket" in result.output
+
+
+@pytest.mark.parametrize("flag", ["--encrypt", "--no-encrypt"])
+def test_setup_disabled_with_an_encryption_flag_is_rejected_not_dropped(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch, flag: str
+) -> None:
+    """Both spellings are refused: this path writes ``enabled: false`` and nothing else.
+
+    Regression: the flag was dropped on the floor and the command exited 0, so a
+    run that asked for an encryption change was told it had succeeded while the
+    stored setting stayed as it was.
+    """
+    calls: dict[str, bool] = {}
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.disable_remote_sync",
+        lambda: calls.setdefault("disabled", True),
+    )
+    monkeypatch.setattr(
+        "surfaces.cli.commands.remote_sync.save_remote_sync_settings",
+        lambda _request: calls.setdefault("saved", True),
+    )
+
+    result = runner.invoke(remote_sync_command, ["setup", "--disabled", flag])
+
+    assert result.exit_code == ERROR
+    assert calls == {}
+    assert f"cannot also set {flag}" in result.output
     assert "Pass --bucket" in result.output
 
 

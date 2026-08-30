@@ -22,7 +22,7 @@ from infrastructure.filestorage.engine import SyncReport
 from infrastructure.filestorage.enums import BucketExposure, SyncDirection
 from infrastructure.filestorage.exclusions import ExclusionRules
 from infrastructure.filestorage.exposure import PublicAccessStatus
-from infrastructure.filestorage.operations import SyncRootStatus, SyncStatus
+from infrastructure.filestorage.operations import EncryptionStatus, SyncRootStatus, SyncStatus
 from infrastructure.filestorage.providers import credential_hint_for_provider
 from infrastructure.filestorage.providers.registry import builtin_providers
 
@@ -127,6 +127,24 @@ def format_exposure_line(exposure: PublicAccessStatus) -> str:
     return f"Bucket access: could not confirm it is private{detail}."
 
 
+def format_encryption_line(encryption: EncryptionStatus) -> str:
+    """One line on whether contents are sealed, loudest when something is wrong.
+
+    A problem gets the same treatment as a public bucket: an operator who is
+    about to sync needs to read it, not skim past it.
+    """
+    if encryption.problem:
+        return f"WARNING: {encryption.problem}"
+
+    if not encryption.configured:
+        return (
+            "Content is NOT encrypted before upload.\n"
+            "The store's operator can read your sessions and memory.\n"
+            "Turn it on by running `opensre remote-sync setup`."
+        )
+    return "Content is encrypted before upload; this machine holds the key."
+
+
 def format_status_lines(status: SyncStatus) -> tuple[str, ...]:
     """Plain-text status lines for CLI, REPL, or gateway sinks (pure)."""
     if not status.enabled or status.config is None:
@@ -137,6 +155,8 @@ def format_status_lines(status: SyncStatus) -> tuple[str, ...]:
     ]
     if status.exposure is not None:
         lines.append(format_exposure_line(status.exposure))
+    if status.encryption is not None:
+        lines.append(format_encryption_line(status.encryption))
     lines.append("Mirrored:")
     for root in status.roots:
         lines.append(f"  {root.name:<10} {root.path} ({root_state(root)})")
@@ -195,12 +215,12 @@ SETUP_DISABLED_CONFIRM = (
     "(stored provider/bucket kept for when you turn it back on)."
 )
 
-
 __all__ = [
     "DISABLED_HELP",
     "NO_EXCLUSIONS_HELP",
     "SETUP_DISABLED_CONFIRM",
     "direction_label",
+    "format_encryption_line",
     "format_exclusion_lines",
     "format_exposure_line",
     "format_report_lines",

@@ -18,11 +18,15 @@ User-facing wording lives in :mod:`infrastructure.filestorage.messages`.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 from config.scope_context import current_scope
 from infrastructure.filestorage.config import RemoteSyncConfig, load_remote_sync_config
+from infrastructure.filestorage.encryption.error_messages import external_encryption_message
+from infrastructure.filestorage.encryption.manifest import manifest_in_listing
+from infrastructure.filestorage.encryption.resolver import resolve_cipher
 from infrastructure.filestorage.engine import (
     ProgressCallback,
     SyncReport,
@@ -32,7 +36,10 @@ from infrastructure.filestorage.engine import (
     run_sync,
 )
 from infrastructure.filestorage.enums import SyncDirection, SyncRootName
-from infrastructure.filestorage.errors import OrgScopeNotSupportedError
+from infrastructure.filestorage.errors import (
+    OrgScopeNotSupportedError,
+    RemoteSyncEncryptionError,
+)
 from infrastructure.filestorage.exclusions import NO_EXCLUSIONS, ExclusionRules
 from infrastructure.filestorage.exposure import PublicAccessStatus
 from infrastructure.filestorage.providers import (
@@ -41,6 +48,8 @@ from infrastructure.filestorage.providers import (
     max_parallel_uploads_for_provider,
 )
 from infrastructure.filestorage.syncable import SyncRoot, syncable_roots
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -59,6 +68,31 @@ class SyncRootStatus:
 
 
 @dataclass(frozen=True)
+class EncryptionStatus:
+    """Whether contents are sealed, and whether this machine can open them.
+
+    ``problem`` carries the reason a sync would be refused, so ``status``
+    reports a missing passphrase or a plaintext/encrypted mismatch *before* the
+    operator discovers it mid-sync. Empty when nothing is wrong.
+
+    Safe for any surface by construction: it is never an exception's own text,
+    only static copy (see
+    :func:`~infrastructure.filestorage.error_messages.external_encryption_message`)
+    or a failure's type name, because ``status`` output is rendered into chat
+    replies as well as a terminal.
+    """
+
+    configured: bool
+    store_encrypted: bool
+    key_available: bool = False
+    problem: str = ""
+
+    @property
+    def healthy(self) -> bool:
+        return not self.problem
+
+
+@dataclass(frozen=True)
 class SyncStatus:
     """Whether sync is on and what would move — shared across all surfaces.
 
@@ -66,11 +100,14 @@ class SyncStatus:
     :class:`~infrastructure.filestorage.exposure.PublicAccessStatus` otherwise —
     always present, since :func:`~infrastructure.filestorage.providers.check_bucket_exposure`
     itself degrades to ``UNKNOWN`` instead of raising.
+
+    ``encryption`` is ``None`` when sync is off, for the same reason.
     """
 
     config: RemoteSyncConfig | None
     roots: tuple[SyncRootStatus, ...]
     exposure: PublicAccessStatus | None = None
+    encryption: EncryptionStatus | None = None
 
     @property
     def enabled(self) -> bool:
@@ -129,19 +166,66 @@ def _root_status(root: SyncRoot, exclusions: ExclusionRules) -> SyncRootStatus:
     )
 
 
-def get_sync_status() -> SyncStatus:
-    """Load config, resolve scoped roots, and check whether the store is public.
+def _encryption_status(config: RemoteSyncConfig) -> EncryptionStatus:
+    """Report what a sync would decide about encryption, without doing one.
 
-    The exposure check is the one network call this makes — only when sync
-    is on, and only if the provider registered a checker; see
-    :func:`~infrastructure.filestorage.providers.check_bucket_exposure`.
+    Runs the same gate the transfer runs — in both directions, so encryption
+    being off on this machine never skips the check — and ``status`` and
+    ``sync`` can therefore never disagree about whether this machine may talk
+    to this store. A missing manifest is the case that needs it: no listing
+    tells a sealed store whose keys were deleted apart from a plaintext one.
+    Every failure is reported rather than raised: status exists to explain a
+    problem, and one that ends in a traceback explains less than a line saying
+    what is wrong.
+    """
+    try:
+        store = build_object_store(config)
+        # The gate hands back the listing it had to read, so presence of the
+        # manifest is answered without listing the store a second time.
+        gate = resolve_cipher(store, encrypted=config.encrypted, dry_run=True)
+        return EncryptionStatus(
+            configured=config.encrypted,
+            store_encrypted=manifest_in_listing(gate.listing),
+            key_available=config.encrypted,
+        )
+    except RemoteSyncEncryptionError as exc:
+        # It can name the object key that failed, the store's key settings, or a wrapped
+        # keyring error, and this line is rendered into chat replies.
+        # Static copy chosen by class instead; the detail goes to the log.
+        logger.warning("[remote-sync] encryption gate refused this store", exc_info=True)
+        return EncryptionStatus(
+            configured=config.encrypted,
+            store_encrypted=True,
+            problem=external_encryption_message(exc),
+        )
+    except Exception as exc:
+        # an unreachable store, a rejected credential, or a registered provider that returns something
+        # unusable all end here, and none of them may take the command down.
+        # Only the exception's type is reported: this line reaches chat sinks.
+        logger.warning("[remote-sync] encryption status check failed", exc_info=True)
+        return EncryptionStatus(
+            configured=config.encrypted,
+            store_encrypted=False,
+            problem=f"could not check the store's encryption ({type(exc).__name__})",
+        )
+
+
+def get_sync_status() -> SyncStatus:
+    """Load config, resolve scoped roots, and check the store's access and keys.
+
+    Makes network calls only when sync is on: the exposure check (if the
+    provider registered a checker; see
+    :func:`~infrastructure.filestorage.providers.check_bucket_exposure`) and the
+    encryption gate — one listing, plus a single object read when there is no
+    manifest and only an object's bytes can say whether the store is sealed.
     """
     _refuse_org_scoped_turn()
     config = load_remote_sync_config()
     exclusions = config.exclude if config is not None else NO_EXCLUSIONS
     roots = tuple(_root_status(root, exclusions) for root in syncable_roots())
     exposure = check_bucket_exposure(config) if config is not None else None
-    return SyncStatus(config=config, roots=roots, exposure=exposure)
+    encryption = _encryption_status(config) if config is not None else None
+    return SyncStatus(config=config, roots=roots, exposure=exposure, encryption=encryption)
 
 
 def run_remote_sync(
@@ -161,6 +245,10 @@ def run_remote_sync(
     ``on_progress``, when given, is called once per key evaluated — the
     single place CLI and slash both get live progress from, so neither
     re-derives it. See :class:`infrastructure.filestorage.engine.SyncProgress`.
+
+    Encryption is settled before anything moves: a store and a machine that
+    disagree about it fail here, with nothing uploaded or written. A pull-only
+    run writes nothing remote at all.
     """
     _refuse_org_scoped_turn()
     resolved = (
@@ -173,6 +261,10 @@ def run_remote_sync(
         return None
     roots = syncable_roots()
     store = build_object_store(config)
+    # Fails closed on any mismatch, and hands back the listing it had to fetch
+    # to decide, so the sync below does not list the store a second time. The
+    # direction goes with it: a pull-only run must not write a manifest.
+    gate = resolve_cipher(store, encrypted=config.encrypted, direction=resolved, dry_run=dry_run)
     return _owned_report(
         run_sync(
             store,
@@ -183,11 +275,14 @@ def run_remote_sync(
             on_progress=on_progress,
             # The backend, not the engine, knows how hard it can be pushed.
             max_parallel_uploads=max_parallel_uploads_for_provider(config.provider),
+            cipher=gate.cipher,
+            listing=gate.listing,
         )
     )
 
 
 __all__ = [
+    "EncryptionStatus",
     "SyncRootStatus",
     "SyncStatus",
     "get_sync_status",

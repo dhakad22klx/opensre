@@ -9,9 +9,11 @@ from typing import Any
 import pytest
 from rich.console import Console
 
+from config.constants.filestorage import REMOTE_SYNC_BUCKET_ENV, REMOTE_SYNC_ENV
 from core.agent_harness.session import SessionCore
 from core.agent_harness.session.persistence.memory import InMemorySessionStore
 from core.agent_harness.tools.action_tools import get_action_tool
+from infrastructure.filestorage.errors import UndecryptableObjectError
 from infrastructure.turn_host.turn_runner import TurnRunner
 from tests.core.agent.orchestration.cross_surface_parity_harness import (
     RecordingTurnOutput,
@@ -372,3 +374,37 @@ def test_gateway_background_list_stays_under_the_cap_on_worst_case_records() -> 
     assert len(sink.finalized) <= 4096, len(sink.finalized)
     assert sink.finalized.endswith("Use /background show <task_id> for the full RCA.")
     assert "more" in sink.finalized
+
+
+def test_gateway_reply_never_carries_an_encryption_failure_detail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """CWE-209 on a real gateway turn: the store's object key must not be replied.
+
+    ``/remote-sync status`` runs the same handler the REPL uses, but here the
+    reply leaves the machine — a chat user in the channel would have read the
+    remote key of one of the operator's private sessions. ``status`` reports the
+    encryption gate's verdict, which is where an object key reaches the wording;
+    the assertion is on the delivered reply rather than the handler, since
+    delivery is what leaks.
+    """
+    planted = "sessions/2026-08-24-standup/PLANTED-KEY.jsonl"
+
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise UndecryptableObjectError(f"{planted} failed authentication.")
+
+    monkeypatch.setenv(REMOTE_SYNC_ENV, "1")
+    monkeypatch.setenv(REMOTE_SYNC_BUCKET_ENV, "some-bucket")
+    monkeypatch.setattr("infrastructure.filestorage.operations.build_object_store", _boom)
+
+    with caplog.at_level(logging.WARNING):
+        sink = _run_gateway_slash("/remote-sync status")
+
+    # Everything the sink was handed, flattened: a key wrapped across two lines
+    # is still a leaked key, and it must be absent from the streamed reply, the
+    # finalized message, and any rendered error alike.
+    delivered = "".join(
+        "".join(part.split()) for part in (*sink.lines, *sink.streamed, sink.finalized or "")
+    )
+    assert "PLANTED-KEY" not in delivered, delivered
+    assert planted in caplog.text, "detail must survive server-side"

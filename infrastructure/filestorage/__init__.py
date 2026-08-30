@@ -24,6 +24,7 @@ from infrastructure.filestorage.config import (
     remote_sync_enabled,
 )
 from infrastructure.filestorage.contracts import ObjectStore, RemoteObject
+from infrastructure.filestorage.encryption.error_messages import external_encryption_message
 from infrastructure.filestorage.engine import (
     SyncReport,
     local_files,
@@ -41,11 +42,17 @@ from infrastructure.filestorage.enums import (
     SyncRootName,
 )
 from infrastructure.filestorage.errors import (
+    EncryptedStoreError,
+    MissingPassphraseError,
     OrgScopeNotSupportedError,
+    PlaintextStoreError,
     RemoteSyncConfigError,
+    RemoteSyncEncryptionError,
     RemoteSyncError,
     RemoteSyncUnavailableError,
+    UndecryptableObjectError,
     UnsyncablePathError,
+    WrongPassphraseError,
 )
 from infrastructure.filestorage.exclusions import (
     NO_EXCLUSIONS,
@@ -63,6 +70,7 @@ from infrastructure.filestorage.messages import (
     root_state,
 )
 from infrastructure.filestorage.operations import (
+    EncryptionStatus,
     SyncRootStatus,
     SyncStatus,
     get_sync_status,
@@ -80,9 +88,16 @@ __all__ = [
     "NO_EXCLUSIONS",
     "NO_EXCLUSIONS_HELP",
     "BucketExposure",
+    "EncryptedStoreError",
+    "EncryptionStatus",
     "ExclusionRules",
+    "MissingPassphraseError",
     "OrgScopeNotSupportedError",
+    "PlaintextStoreError",
     "PublicAccessStatus",
+    "RemoteSyncEncryptionError",
+    "UndecryptableObjectError",
+    "WrongPassphraseError",
     "format_exclusion_lines",
     "format_exposure_line",
     "format_status_lines",
@@ -105,6 +120,7 @@ __all__ = [
     "UnsyncablePathError",
     "build_object_store",
     "check_bucket_exposure",
+    "external_encryption_message",
     "get_sync_status",
     "is_syncable",
     "load_remote_sync_config",

@@ -11,6 +11,9 @@ import config.constants.paths as paths
 from config.constants import (
     OPENSRE_MEMORY_AUTOEXTRACT_DISABLED_ENV,
     OPENSRE_MEMORY_DIR_ENV,
+    REMOTE_SYNC_ENCRYPT_ENV,
+    REMOTE_SYNC_KEY_CACHE_ENV,
+    REMOTE_SYNC_PASSPHRASE_ENV,
 )
 from config.grafana_cloud import load_env
 
@@ -82,6 +85,25 @@ def _restore_os_environ():
     finally:
         os.environ.clear()
         os.environ.update(saved)
+
+
+@pytest.fixture(autouse=True)
+def _clear_remote_sync_encryption_env(monkeypatch) -> None:
+    """Keep a developer's own encrypted store out of every other test.
+
+    ``OPENSRE_REMOTE_SYNC_ENCRYPT`` is loaded from the repo ``.env`` like any
+    other setting, so anyone who turned encryption on for their own machine
+    made every test that switches sync on reach the encryption gate and fail
+    for want of a passphrase. Tests that mean to exercise encryption set these
+    themselves; this fixture runs first, so their ``monkeypatch.setenv`` still
+    wins.
+    """
+    for env_var in (
+        REMOTE_SYNC_ENCRYPT_ENV,
+        REMOTE_SYNC_PASSPHRASE_ENV,
+        REMOTE_SYNC_KEY_CACHE_ENV,
+    ):
+        monkeypatch.delenv(env_var, raising=False)
 
 
 @pytest.fixture(autouse=True)
